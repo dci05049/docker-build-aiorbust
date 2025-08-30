@@ -1,0 +1,2 @@
+FROM ostris/aitoolkit:latest
+
