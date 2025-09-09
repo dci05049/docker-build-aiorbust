@@ -1,0 +1,100 @@
+name: build api (EC2 → Docker Hub)
+on: { workflow_dispatch: {} }
+
+permissions: { id-token: write, contents: read }
+
+env:
+  AWS_REGION: us-east-1
+  AMI_ID: ami-0c02fb55956c7d316
+  INSTANCE_TYPE: m7i.large
+  VOLUME_SIZE_GB: "300"
+  INSTANCE_PROFILE: Ec2BuilderInstanceRole
+  USE_SPOT: "true"
+
+  DOCKER_IMAGE: flux-kontext
+  BUILD_CONTEXT: flux-kontext
+  DOCKERFILE_PATH: Dockerfile
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::647066518245:role/GithubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Launch EC2 (Spot)
+        id: ec2
+        run: |
+          set -euo pipefail
+          BDM="DeviceName=/dev/xvda,Ebs={VolumeSize=${VOLUME_SIZE_GB},VolumeType=gp3,DeleteOnTermination=true}"
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "${AMI_ID}" --instance-type "${INSTANCE_TYPE}" \
+            --iam-instance-profile Name=${INSTANCE_PROFILE} \
+            --block-device-mappings "${BDM}" \
+            --instance-market-options MarketType=spot \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=docker-builder-${{ github.run_id }}-api}]" \
+            --query 'Instances[0].InstanceId' --output text)
+          echo "INSTANCE_ID=${INSTANCE_ID}" >> $GITHUB_OUTPUT
+          aws ec2 wait instance-running --instance-ids "${INSTANCE_ID}"
+
+      - name: Wait for SSM
+        run: |
+          IID=${{ steps.ec2.outputs.INSTANCE_ID }}
+          for i in {1..60}; do
+            STATUS=$(aws ssm describe-instance-information --query "InstanceInformationList[?InstanceId=='${IID}'].PingStatus" --output text || true)
+            [ "$STATUS" = "Online" ] && exit 0
+            sleep 10
+          done
+          echo "SSM not online" ; exit 1
+
+      - name: Build on EC2 via SSM and push to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          IID=${{ steps.ec2.outputs.INSTANCE_ID }}
+          cat > /tmp/build.sh << 'EOS'
+          set -euo pipefail
+          sudo yum update -y
+          sudo amazon-linux-extras install docker -y || sudo yum install -y docker
+          sudo service docker start
+          docker run --privileged --rm tonistiigi/binfmt --install all || true
+          docker buildx create --use
+
+          mkdir -p /home/ec2-user/work && cd /home/ec2-user/work
+          git clone https://github.com/${REPO}.git src
+          cd src && git checkout ${SHA}
+
+          echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+          FULL="docker.io/${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}"
+
+          docker buildx build \
+            --file ${DOCKERFILE_PATH} \
+            --push \
+            --tag ${FULL}:latest \
+            --tag ${FULL}:${SHA} \
+            --cache-from type=registry,ref=${FULL}:cache \
+            --cache-to type=registry,ref=${FULL}:cache,mode=max \
+            ${BUILD_CONTEXT}
+          EOS
+
+          CMD_ID=$(aws ssm send-command --instance-ids "${IID}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="bash -lc '$(sed "s/\\/\\\\/g; s/'/'\\\\''/g" /tmp/build.sh)'" \
+            --query "Command.CommandId" --output text)
+
+          aws ssm wait command-executed --command-id "${CMD_ID}" --instance-id "${IID}"
+          STATUS=$(aws ssm list-command-invocations --command-id "${CMD_ID}" --details --query "CommandInvocations[0].Status" --output text)
+          echo "SSM status: ${STATUS}"
+          test "${STATUS}" = "Success"
+
+      - name: Terminate EC2 (always)
+        if: always()
+        run: |
+          IID=${{ steps.ec2.outputs.INSTANCE_ID }}
+          [ -n "${IID}" ] && aws ec2 terminate-instances --instance-ids "${IID}" >/dev/null

@@ -40,4 +40,14 @@ else
     echo "✅ wan_2.1_vae.safetensors already exists, skipping download."
 fi
 
+# Diffusion Model – Wan2.2 S2V 14B
+if [ ! -f "/ComfyUI/models/diffusion_models/Wan2_2-S2V-14B_fp8_e4m3fn_scaled_KJ.safetensors" ]; then
+    wget --content-disposition -O "/ComfyUI/models/diffusion_models/Wan2_2-S2V-14B_fp8_e4m3fn_scaled_KJ.safetensors" \
+    "https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/S2V/Wan2_2-S2V-14B_fp8_e4m3fn_scaled_KJ.safetensors"
+    echo "✅ Model downloaded: Wan2_2-S2V-14B_fp8_e4m3fn_scaled_KJ.safetensors"
+else
+    echo "✅ Wan2_2-S2V-14B_fp8_e4m3fn_scaled_KJ.safetensors already exists, skipping download."
+fi
+
+
 
