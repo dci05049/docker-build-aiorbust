@@ -1,0 +1,41 @@
+# VCS & metadata
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+pip-wheel-metadata/
+
+# Node/JS (if present)
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Builds & caches
+build/
+dist/
+.cache/
+.coverage
+pytest_cache/
+
+# Env & secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# OS/editor
+.DS_Store
+Thumbs.db
+*.swp
